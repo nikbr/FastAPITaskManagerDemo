@@ -18,7 +18,7 @@ class TaskQueryParams(BaseModel):
 class TaskUpdateParams(BaseModel):
     name: str | None = None
     description: str|None = None
-    due_date : str | None = None
+    due_date : date | None = None
     status : Status | None = None
     priority : Priority | None = None
     type : TaskType | None = None
@@ -155,8 +155,6 @@ async def tasks(
     filter_query: Annotated[TaskQueryParams, Query(title="Filter tasks by contains, status, priority and type.")],
     session: Session = Depends(get_session)
     ) -> list[Task]:
-    #TODO add query param validation
-    #TODO fix Priority param
     task_list = session.exec(select(Task)).all()
     print(filter_query)
     contains = filter_query.contains
@@ -226,6 +224,23 @@ async def tasks_by_type(
     ).all()
     return task_list
 
+def validate_user_task_compat(user:User, task_type:TaskType) -> None:
+    if user:
+        role = user.role
+        if role == Role.MANAGER:
+            if task_type not in (TaskType.MANAGING, TaskType.REVIEW):
+                raise HTTPException(status_code=422, detail="Incompatible user role.")
+        elif role == Role.SENIOR:
+            if task_type not in (TaskType.CODING, TaskType.REVIEW):
+                raise HTTPException(status_code=422, detail="Incompatible user role.")
+        elif role == Role.JUNIOR:
+            if task_type not in (TaskType.CODING, TaskType.TESTING):
+                raise HTTPException(status_code=422, detail="Incompatible user role.")
+        elif role == Role.TESTER:
+            if task_type != TaskType.TESTING:
+                raise HTTPException(status_code=422, detail="Incompatible user role.")
+    else:
+        raise HTTPException(status_code=404, detail="User not found.")
 
 @app.put('/tasks/{task_id}')
 async def update_task(
@@ -233,7 +248,7 @@ async def update_task(
     update: TaskUpdateParams = Body(..., description="Any subset of task fields"),
     session: Session = Depends(get_session)
     ) -> Task:
-    
+
     task = session.get(Task, task_id)
     if not task_id:
         raise HTTPException(status_code=404, detail="Task not found")
@@ -245,15 +260,18 @@ async def update_task(
     new_priority = update_data.get("priority")
     new_type = update_data.get("type")
     new_user_id = update_data.get("user_id")
-    
+
+    user = session.get(User, new_user_id)
+    validate_user_task_compat(user, new_type)
+
     if new_name: task.name = new_name
     if new_desc: task.description = new_desc
-    if new_due_date: task.due_date = date(new_due_date)
+    if new_due_date: task.due_date = new_due_date
     if new_status: task.status = new_status
     if new_priority: task.priority = new_priority.value
     if new_type: task.type = new_type
     if new_user_id: task.user_id = new_user_id
-    
+
     session.add(task)
     session.commit()
     session.refresh(task)
@@ -272,20 +290,27 @@ async def delete_task(
     session.commit()
     return task
 
+
+
 @app.post('/tasks')
 async def add_task(
     task_data : TaskBase,
     session: Session = Depends(get_session)
-                   ) -> Task:
+) -> Task:
+    user_id = task_data.user_id
+    task_type = task_data.type
+    if(user_id):
+        user = session.get(User, user_id)
+        validate_user_task_compat(user, task_type)
+
+
     new_task = Task(name=task_data.name,
                    description=task_data.description,
                    due_date=task_data.due_date,
                    status=task_data.status,
                    priority=task_data.priority,
-                   type=task_data.type,
-                   user_id=task_data.user_id)
-    #TODO: add validation to check if user id exists
-    #TODO: add validation for user role vs task type
+                   type=task_type,
+                   user_id=user_id)
 
     session.add(new_task)
     session.commit()
