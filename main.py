@@ -23,6 +23,8 @@ class TaskUpdateParams(BaseModel):
     priority : Priority | None = None
     type : TaskType | None = None
     user_id: int | None = None
+    relate_task_id: int | None = None
+    delete_relation: int | None = None
 
 
 @asynccontextmanager
@@ -194,6 +196,18 @@ async def task(
         raise HTTPException(status_code=404, detail="Task not found")
     return task
 
+@app.get('/tasks/{task_id}/related_task_ids')
+async def task(
+    task_id: Annotated[int, Path(title="Task ID")],
+    session: Session = Depends(get_session)
+    ) -> list[int]:
+    task = session.get(Task, task_id)
+    if task is None:
+        raise HTTPException(status_code=404, detail="Task not found")
+    
+
+    return sorted(t.id for t in task.related_tasks if t.id is not None)
+
 @app.get('/tasks/priority/{priority}')
 async def tasks_by_priority(
     priority:Annotated[int, Path(title="Task priority")], #TODO need to make this Priority in the future probably
@@ -250,7 +264,7 @@ async def update_task(
     ) -> Task:
 
     task = session.get(Task, task_id)
-    if not task_id:
+    if not task:
         raise HTTPException(status_code=404, detail="Task not found")
     update_data = update.model_dump(exclude_unset=True, exclude_none=True)
     new_name = update_data.get("name")
@@ -260,17 +274,40 @@ async def update_task(
     new_priority = update_data.get("priority")
     new_type = update_data.get("type")
     new_user_id = update_data.get("user_id")
+    new_relationship = update_data.get("relate_task_id")
+    delete_relation = update_data.get("delete_relation")
 
-    user = session.get(User, new_user_id)
-    validate_user_task_compat(user, new_type)
+    user = session.get(User, task.user_id)    
 
     if new_name: task.name = new_name
     if new_desc: task.description = new_desc
     if new_due_date: task.due_date = new_due_date
     if new_status: task.status = new_status
     if new_priority: task.priority = new_priority.value
-    if new_type: task.type = new_type
-    if new_user_id: task.user_id = new_user_id
+
+    if new_user_id and new_type:
+        user = session.get(User, new_user_id)
+        validate_user_task_compat(user, new_type)
+        task.user_id = new_user_id
+        task.type = new_type
+    elif new_user_id:
+        user = session.get(User, new_user_id)
+        validate_user_task_compat(user, task.type)
+        task.user_id = new_user_id
+    elif new_type: 
+        validate_user_task_compat(user, task.type)
+        task.type = new_type
+    
+    if new_relationship:
+        other_task = session.get(Task, new_relationship)
+        if not other_task:
+            raise HTTPException(status_code=404, detail="Other task not found")
+        task.related_tasks.add(other_task)
+        other_task.related_tasks.add(task)
+    if delete_relation:
+        other_task = session.get(Task, delete_relation)
+        task.related_tasks.discard(other_task)
+        other_task.related_tasks.discard(task)
 
     session.add(task)
     session.commit()
@@ -289,6 +326,7 @@ async def delete_task(
     session.delete(task)
     session.commit()
     return task
+
 
 
 
@@ -316,3 +354,5 @@ async def add_task(
     session.commit()
     session.refresh(new_task)
     return new_task
+
+

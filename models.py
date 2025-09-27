@@ -1,6 +1,6 @@
 from datetime import date
 from enum import Enum, auto
-from sqlmodel import SQLModel, Field, Relationship
+from sqlmodel import SQLModel, Field, Relationship, Column, ForeignKey, UniqueConstraint, CheckConstraint
 from pydantic import field_validator
 
 
@@ -39,29 +39,36 @@ class TaskBase(SQLModel):
     user_id: int | None = Field(default = None, foreign_key="user.id")
 
 class TaskRelation(SQLModel, table=True):
-    task_id: int |None = Field(foreign_key="task.id", primary_key=True)
-    related_task_id : int | None= Field(foreign_key="task.id", primary_key=True)
+
+    task_id: int = Field(
+        sa_column=Column(ForeignKey("task.id", ondelete="CASCADE"), primary_key=True)
+    )
+    related_task_id: int = Field(
+        sa_column=Column(ForeignKey("task.id", ondelete="CASCADE"), primary_key=True)
+    )
+
+    __table_args__ = (
+        UniqueConstraint("task_id", "related_task_id", name="uq_task_relation"),
+        CheckConstraint("task_id != related_task_id", name="ck_no_self_relation"),
+    )
+
 
 class Task(TaskBase, table=True):
+    __hash__ = object.__hash__
     id: int | None = Field(default=None, primary_key=True)
     user: "User" = Relationship(back_populates="tasks")
-    relatedTasks: list["Task"] = Relationship(
-        back_populates="relatedTo",
+    related_tasks: list["Task"] = Relationship(
         link_model=TaskRelation,
         sa_relationship_kwargs={
             "primaryjoin": "Task.id==TaskRelation.task_id",
             "secondaryjoin": "Task.id==TaskRelation.related_task_id",
+            "collection_class": set,
+            "lazy": "selectin",
         },
     )
 
-    relatedTo: list["Task"] = Relationship(
-        back_populates="relatedTasks",
-        link_model=TaskRelation,
-        sa_relationship_kwargs={
-            "primaryjoin": "Task.id==TaskRelation.related_task_id",
-            "secondaryjoin": "Task.id==TaskRelation.task_id",
-        },
-    )
+
+
 
 class UserBase(SQLModel):
     name: str
